@@ -3,7 +3,7 @@ from rapidfuzz import fuzz
 
 def fetch_tr_legal_odds():
     tr_matches = []
-    print("[TARAYICI] Nesine.com açılıyor, güncel JSON yapısı çözümleniyor...")
+    print("[TARAYICI] Nesine.com bülteni taranıyor...")
 
     with sync_playwright() as p:
         try:
@@ -25,34 +25,68 @@ def fetch_tr_legal_odds():
                             events = data.get("sg", {}).get("EA", []) or data.get("sg", {}).get("ea", [])
                             
                             for item in events:
+                                #Sadece Futbol (TYPE = 1) maçlarını al, diğerlerini (Basketbol vb.) atla
+                                event_type = item.get("TYPE") or item.get("type")
+                                if str(event_type) != "1":
+                                    continue
+                                    
                                 home = item.get("HN") or item.get("hn")
                                 away = item.get("AN") or item.get("an")
-                                odds = {}
+                                league = item.get("LN") or item.get("L") or f"Lig {item.get('C', '')}"
+                                time = item.get("T") or item.get("t") or ""
+                                date = item.get("D") or item.get("d") or ""
                                 
-                                # Yeni API yapısındaki Marketler dizisi (MA)
-                                markets = item.get("MA", [])
+                                match_markets = {}
+                                
+                                # Hedeflenen bahis marketleri ID'leri
+                                mtid_map = {
+                                    1: "Maç Sonucu", 99: "Maç Sonucu", 115: "Maç Sonucu",
+                                    3: "İlk Yarı Sonucu",
+                                    13: "1.5 Gol Alt/Üst",
+                                    14: "2.5 Gol Alt/Üst",
+                                    15: "3.5 Gol Alt/Üst",
+                                    22: "Karşılıklı Gol"
+                                }
+                                
+                                markets = item.get("MA", []) or item.get("m", [])
                                 for m in markets:
-                                    # MTID 1: Futbol MS, MTID 115: Basketbol MS
-                                    if m.get("MTID") in [1, 115, 99]: 
-                                        # Oranlar dizisi (OCA)
-                                        outcomes = m.get("OCA", [])
+                                    mtid = m.get("MTID") or m.get("t")
+                                    market_name = m.get("MN") or mtid_map.get(mtid)
+                                    
+                                    if market_name:
+                                        outcomes = m.get("OCA", []) or m.get("o", [])
+                                        odds = {}
                                         for o in outcomes:
-                                            # N: Seçenek (1, X, 2), O: Oran
-                                            name = str(o.get("N"))
-                                            odd = o.get("O")
+                                            name = str(o.get("N") or o.get("n"))
+                                            odd = o.get("O") or o.get("v")
                                             if odd:
+                                                # Alt/Üst - Var/Yok İsimlendirmeleri
+                                                if "Alt" in market_name or "Üst" in market_name:
+                                                    if name == "1": name = "Alt"
+                                                    elif name == "2": name = "Üst"
+                                                elif market_name == "Karşılıklı Gol":
+                                                    if name == "1": name = "Var"
+                                                    elif name == "2": name = "Yok"
+                                                    
                                                 odds[name] = float(odd)
                                                 
-                                if home and away and odds:
-                                    tr_matches.append({"home_team": home, "away_team": away, "odds": odds})
+                                        if odds:
+                                            match_markets[market_name] = odds
+                                            
+                                if home and away and match_markets:
+                                    tr_matches.append({
+                                        "home_team": home, 
+                                        "away_team": away, 
+                                        "league": str(league),
+                                        "time": time,
+                                        "date": date,
+                                        "markets": match_markets
+                                    })
                         except Exception:
                             pass
 
             page.on("response", handle_response)
-
-            print("[TARAYICI] Nesine bülten sayfasına gidiliyor...")
             page.goto("https://www.nesine.com/iddaa", timeout=45000, wait_until="domcontentloaded")
-            
             page.wait_for_timeout(4000)
             
             try:
@@ -61,35 +95,12 @@ def fetch_tr_legal_odds():
             except:
                 pass
             
-            print("[TARAYICI] Bültenlerin tamamen işlenmesi için bekleniyor (8 saniye)...")
-            page.wait_for_timeout(8000)
-            
+            page.wait_for_timeout(6000)
             browser.close()
             
         except Exception as e:
             print(f"[TARAYICI HATA] {e}")
 
-    # Mükerrer maçları temizle
+    # Aynı maçın mükerrer listelenmesini önle
     unique_matches = {f"{m['home_team']}-{m['away_team']}": m for m in tr_matches}
     return list(unique_matches.values())
-
-def match_tr_teams(global_home, global_away, tr_matches_list):
-    best_match = None
-    highest_score = 0
-    global_str = f"{global_home} {global_away}".lower()
-
-    for tr_m in tr_matches_list:
-        tr_str = f"{tr_m['home_team']} {tr_m['away_team']}".lower()
-        score = fuzz.token_set_ratio(global_str, tr_str)
-        if score > 60 and score > highest_score:
-            highest_score = score
-            best_match = tr_m
-
-    return best_match
-
-if __name__ == "__main__":
-    matches = fetch_tr_legal_odds()
-    print(f"\n[SONUÇ] Toplam Çekilen Maç Sayısı: {len(matches)}")
-    if matches:
-        print("\nÖrnek Çekilen Maç:")
-        print(matches[0])
